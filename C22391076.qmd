@@ -1,0 +1,391 @@
+---
+title: "Irish Housing Market Analysis"
+author: "Ismail Khan"
+format:
+  html:
+    embed-resources: true 
+    toc: true
+    toc-float: true
+    code-fold: true
+    code-tools: true 
+    theme: flatly
+---
+
+```{r}
+#| label: setup
+#| include: false
+#| message: false
+#| warning: false
+
+library(tidyverse)
+library(plotly)
+library(lubridate)
+
+df <- read_csv("HPM06.20260429183626.csv", show_col_types = FALSE)
+
+# --- Exploratory Chart 1: Line chart — all series ---
+plot_df <- df %>%
+  filter(STATISTIC == "HPM06C01") %>%
+  mutate(Date  = parse_date_time(Month, orders = "Y B"),
+         VALUE = as.numeric(VALUE)) %>%
+  filter(!is.na(VALUE))
+
+# --- Exploratory Chart 2: Bar chart — Dublin houses % change by year ---
+pct_df <- df %>%
+  filter(STATISTIC == "HPM06C04",
+         `Type of Residential Property` == "Dublin - houses") %>%
+  mutate(Date  = parse_date_time(Month, orders = "Y B"),
+         VALUE = as.numeric(VALUE)) %>%
+  filter(!is.na(VALUE)) %>%
+  mutate(Year = year(Date)) %>%
+  group_by(Year) %>%
+  summarise(Avg_Change = mean(VALUE, na.rm = TRUE), .groups = "drop")
+
+# --- Exploratory Chart 3: Divergence — Dublin vs National ---
+divergence_df <- df %>%
+  filter(STATISTIC == "HPM06C01",
+         `Type of Residential Property` %in% c("National - houses",
+                                                "Dublin - houses")) %>%
+  mutate(Date  = parse_date_time(Month, orders = "Y B"),
+         VALUE = as.numeric(VALUE)) %>%
+  filter(!is.na(VALUE)) %>%
+  select(Date, `Type of Residential Property`, VALUE) %>%
+  pivot_wider(names_from = `Type of Residential Property`,
+              values_from = VALUE) %>%
+  rename(National_Houses = `National - houses`,
+         Dublin_Houses   = `Dublin - houses`) %>%
+  mutate(Divergence = Dublin_Houses - National_Houses)
+
+# --- Explanatory Chart 2: Heatmap — Dublin county areas ---
+heatmap_df <- df %>%
+  filter(STATISTIC == "HPM06C01",
+         grepl("Dublin|Dun Laoghaire|Fingal|South Dublin",
+               `Type of Residential Property`),
+         grepl("all residential", `Type of Residential Property`)) %>%
+  mutate(Date  = parse_date_time(Month, orders = "Y B"),
+         Year  = year(Date),
+         VALUE = as.numeric(VALUE)) %>%
+  filter(!is.na(VALUE), Year >= 2010) %>%
+  group_by(Year, `Type of Residential Property`) %>%
+  summarise(Avg_Index = mean(VALUE, na.rm = TRUE), .groups = "drop") %>%
+  mutate(Region = str_remove(`Type of Residential Property`,
+                             " - all residential properties"))
+
+# --- Explanatory Chart 3: Scatter — Index level vs. % change ---
+scatter_df <- df %>%
+  filter(!grepl("National|all residential",
+                `Type of Residential Property`)) %>%
+  select(Month, `Type of Residential Property`, STATISTIC, VALUE) %>%
+  filter(!is.na(VALUE)) %>%
+  pivot_wider(names_from = STATISTIC, values_from = VALUE) %>%
+  rename(Index_Level = HPM06C01, Pct_Change = HPM06C04) %>%
+  drop_na(Index_Level, Pct_Change) %>%
+  mutate(Market = ifelse(grepl("Dublin", `Type of Residential Property`),
+                         "Dublin", "Outside Dublin"))
+
+# --- Explanatory Chart 4: Ribbon — Houses vs. Apartments ---
+ribbon_df <- df %>%
+  filter(STATISTIC == "HPM06C01",
+         grepl("National - houses|National - apartments",
+               `Type of Residential Property`)) %>%
+  mutate(Date  = parse_date_time(Month, orders = "Y B"),
+         VALUE = as.numeric(VALUE)) %>%
+  filter(!is.na(VALUE)) %>%
+  select(Date, `Type of Residential Property`, VALUE) %>%
+  pivot_wider(names_from = `Type of Residential Property`,
+              values_from = VALUE) %>%
+  rename(Houses     = `National - houses`,
+         Apartments = `National - apartments`) %>%
+  drop_na()
+```
+
+## The Big Idea
+
+Big Idea is that while the Irish housing market has recovered nationally, the affordability crisis is highly unequal. Dublin hit an affordability ceiling, which forced buyers outward and violently shifted the market pressure to commuter counties.
+
+------------------------------------------------------------------------
+
+## **Data Limitations and Uncertainty**
+
+*It is important to note the limitations of the CSO Residential Property Price Index. Because the data is presented as an index (Base 100 = January 2005) rather than in absolute Euro values, it measures the relative rate of price growth, not actual purchasing costs. Consequently, a region with a higher index value is not necessarily more expensive in absolute terms; it has simply experienced faster proportional inflation since 2005. Furthermore, because the CSO methodology relies on stamp duty execution and mortgage drawdowns, cash-buyer transactions and off-market sales may be underrepresented, adding a slight layer of uncertainty to the exact market peak and trough measurements.*
+
+## Exploratory Charts
+
+### 1. The Recovery of Value
+
+What is the long-term trajectory of the market, and how does Dublin compare to the National average?
+
+To understand the current market, we must first look at the baseline. This interactive chart tracks the actual Price Index level from 2005 to 2026. After peaking in 2007, the market suffered a catastrophic crash, bottoming out around 2012. While all sectors recovered, Dublin Houses experienced a much sharper, more aggressive upward trajectory than the national average.
+
+```{r}
+#| label: fig-exploratory-1
+#| warning: false
+
+# 1. Filter to 4 series and rename for a clean legend
+clean_plot_df <- plot_df %>%
+  filter(`Type of Residential Property` %in% c("National - all residential properties", "Dublin - all residential properties", "National - houses", "Dublin - houses")) %>%
+  mutate(`Type of Residential Property` = recode(`Type of Residential Property`,
+    "National - all residential properties" = "National (All)",
+    "Dublin - all residential properties"   = "Dublin (All)",
+    "National - houses"                     = "National (Houses)",
+    "Dublin - houses"                       = "Dublin (Houses)"))
+
+# 2. Build the base ggplot
+p1 <- ggplot(clean_plot_df, aes(x = Date, y = VALUE, colour = `Type of Residential Property`)) +
+  geom_line(linewidth = 1) +
+  scale_colour_manual(values = c("National (All)"="#7f8c8d", "Dublin (All)"="#2c3e50", "National (Houses)"="#3498db", "Dublin (Houses)"="#e74c3c")) +
+  theme_minimal() +
+  theme(panel.grid.minor = element_blank(), legend.title = element_blank()) +
+  labs(title = "Irish Residential Property Price Index", subtitle = "Base: Jan 2005 = 100", x = "Year", y = "Index")
+
+# 3. Add interactivity, fix legend, and place non-overlapping arrows
+ggplotly(p1) %>%
+  layout(
+    legend = list(orientation = "h", x = 0, y = -0.2), 
+    annotations = list(
+      list(x = as.numeric(as.POSIXct("2007-04-01")), y = 138, text = "Peak before the crash", 
+           showarrow = TRUE, ax = -60, ay = 0, font = list(size = 11, italic = TRUE)),
+      list(x = as.numeric(as.POSIXct("2012-03-01")), y = 58, text = "Market bottoms out (2012)", 
+           showarrow = TRUE, ax = 40, ay = -40, font = list(size = 11, italic = TRUE)) # Changed ay to -40 to float above the line
+    )
+  )
+```
+
+------------------------------------------------------------------------
+
+### 2. The Volatility of Growth
+
+How violently did the market actually move year-to-year?
+
+While the line chart shows the absolute value of homes recovering, it hides the intense volatility of the market. This bar chart looks exclusively at Dublin Houses, switching the metric from "Index Level" to "Percentage Change" — the speed of growth.
+
+```{r}
+#| label: fig-exploratory-2
+#| warning: false
+
+p2 <- ggplot(pct_df, aes(x = Year, y = Avg_Change, fill = Avg_Change > 0)) +
+  geom_col() +
+  scale_fill_manual(values = c("TRUE" = "steelblue", "FALSE" = "red"),
+                    guide = "none") +
+  theme_minimal() +
+  theme(panel.grid.minor = element_blank(),
+        plot.title       = element_text(face = "bold", size = 14)) +
+  labs(title    = "Volatility in Dublin House Prices",
+       subtitle = "Average Annual Percentage Change (HPM06C04)",
+       x        = "Year",
+       y        = "Average % Change")
+
+p2
+```
+
+------------------------------------------------------------------------
+
+### 3. The Shifting Pressure: Dublin vs. National Average
+
+- When did Dublin hit its affordability ceiling and shift demand to the rest of the country?
+
+To truly understand the uneven pressure of the market, we need to compare how Dublin performed relative to the rest of the country. This divergence area chart plots the exact difference in index points between Dublin Houses and National Houses.
+
+When the area is blue (positive), Dublin's index is outperforming the national average. However, the large red valley emerging from 2019 onwards reveals a critical shift — Dublin prices hit an affordability ceiling, forcing buyers outward, causing the National Index to outpace Dublin's growth in recent years.
+
+```{r}
+#| label: fig-exploratory-3
+#| warning: false
+
+p3_alt <- ggplot(divergence_df, aes(x = Date, y = Divergence)) +
+  geom_area(aes(fill = Divergence > 0), alpha = 0.6) +
+  geom_line(color = "darkblue", linewidth = 1) +
+  scale_fill_manual(values = c("TRUE" = "steelblue", "FALSE" = "red"),
+                    guide = "none") +
+  geom_hline(yintercept = 0, color = "black", linewidth = 1) +
+  theme_minimal() +
+  theme(panel.grid.minor = element_blank(),
+        plot.title       = element_text(face = "bold", size = 14)) +
+  labs(title    = "The Dublin Premium: Divergence from National Average",
+       subtitle = "Positive values show where Dublin's index exceeds the National index",
+       x        = "Year",
+       y        = "Index Point Difference") +
+  annotate("text", x = as.POSIXct("2014-01-01"), y = 15,
+           label = "Dublin pulls away\nduring recovery",
+           fontface = "italic", hjust = 0)
+
+p3_alt
+```
+
+------------------------------------------------------------------------
+
+## Explanatory Charts
+
+How did the peak of the market differ across geographic regions?
+
+## Chart 1: Regional Housing Markets (Small Multiples)
+
+**What it shows:** Instead of putting 4 different regional lines on one messy chart, it uses a "Small Multiples" (facet wrap) design to show Dublin, West, South-West, and Midland on their own individual mini-charts, all sharing the exact same axes and scale.\
+**How it proves the Big Idea:** You can instantly see that while all regions have the same *shape*(up, crash, up), Dublin's peak in 2007 (around 160) was drastically higher than the other regions, proving the pressure was mathematically uneven
+
+```{r}
+#| label: fig-explanatory-1
+#| warning: false
+#| 
+library(plotly)
+
+regional_df <- df %>%
+  filter(STATISTIC == "HPM06C01") %>%
+  filter(`Type of Residential Property` %in% c(
+    "Dublin - houses",
+    "West - houses",
+    "South-West - houses",
+    "Midland - houses"
+  )) %>%
+  mutate(
+    Date   = parse_date_time(Month, orders = "Y B"),
+    VALUE  = as.numeric(VALUE)
+  ) %>%
+  filter(!is.na(VALUE)) %>%
+  mutate(Region = gsub(" - houses", "", `Type of Residential Property`))
+
+# Keep aes() clean — no text aesthetic here
+p3_facet <- ggplot(regional_df, aes(x = Date, y = VALUE, color = Region)) +
+  geom_line(linewidth = 1) +
+  facet_wrap(~ Region) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    panel.grid       = element_blank()
+  ) +
+  labs(
+    title    = "Regional Housing Markets: Small Multiples",
+    subtitle = "Comparing index growth across different geographic regions of Ireland",
+    x        = "Year",
+    y        = "Index Level (Jan 2005 = 100)"
+  ) +
+  geom_text(
+    data = data.frame(Region = "Dublin",
+                      Date   = as.POSIXct("2014-01-01"),
+                      VALUE  = 160),
+    aes(label = "Highest\nregional peak"),
+    fontface = "italic", size = 3, color = "black"
+  )
+
+# tooltip uses column names from the data — "colour" picks up Region, x = Date, y = VALUE
+ggplotly(p3_facet, tooltip = c("colour", "x", "y"))
+```
+
+### 2. The Dublin Divide
+
+Is the pressure equal across Dublin, or are specific local authorities driving the crisis?
+
+Not all parts of Dublin behaved equally. This heatmap shows average annual index levels across Dublin's four county areas. Darker cells mean higher prices. The 2012–2013 trough is visible as pale cells across all regions, while the post-crash surge differs sharply by area.
+
+```{r}
+#| label: fig-explanatory-2
+#| warning: false
+
+dublin_heat <- df %>%
+  filter(STATISTIC == "HPM06C01",             # Absolute index, NOT % change
+         `Type of Residential Property` %in% c(
+           "Dublin - houses",
+           "Dun Laoghaire-Rathdown - houses",
+           "Fingal - houses",
+           "South Dublin - houses"
+         )) %>%
+  mutate(Date  = parse_date_time(Month, orders = "Y B"),
+         Year  = year(Date),
+         VALUE = as.numeric(VALUE)) %>%
+  filter(!is.na(VALUE), Year >= 2010) %>%
+  group_by(Year, `Type of Residential Property`) %>%
+  summarise(Avg = mean(VALUE, na.rm = TRUE), .groups = "drop") %>%
+  mutate(Label = gsub(" - houses", "", `Type of Residential Property`))
+
+ggplot(dublin_heat, aes(x = Year, y = Label, fill = Avg)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = sprintf("%.0f", Avg)), size = 3) +
+  scale_fill_gradient(low = "#fff7e6", high = "#8B0000",   # light → dark red = cheaper → priciest
+                      name = "Avg Index\n(Base 100)") + # Note: Changed \\n to \n here to fix the legend
+  scale_x_continuous(breaks = seq(2010, 2026, 2)) +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid = element_blank()) +
+  labs(title = "Which Dublin Area Is Most Expensive?",
+       subtitle = "Average annual price index level by suburb (HPM06C01, Base Jan 2005 = 100)",
+       x = NULL, y = NULL)
+```
+
+------------------------------------------------------------------------
+
+### 3. **The Uneven Recovery: Regional Growth Since 2010**
+
+Which regions experienced the most aggressive price inflation during the post-crash recovery?
+
+The length of the line shows the total amount of price growth in that region. Sorting the regions by the size of their recovery proves that the affordability crisis is highly centralized: Dublin and its surrounding commuter counties (the Mid-East) experienced explosive, disproportionate growth compared to regions like the Border or Mid-West.
+
+```{r}
+#| label: fig-explanatory-3
+#| warning: false
+db_df <- df %>%
+  filter(STATISTIC == "HPM06C01",
+         `Type of Residential Property` %in% c(
+           "Dublin - houses",
+           "Border excluding Louth - houses",
+           "Midland - houses",
+           "West - houses",
+           "Mid-East including Louth - houses",
+           "Mid-West including South Tipperary - houses",
+           "South-East excluding South Tipperary - houses",
+           "South-West - houses"
+         )) %>%
+  mutate(Year = substr(Month, 1, 4), 
+         VALUE = as.numeric(VALUE), 
+         Region = str_remove(`Type of Residential Property`, " - houses| excluding Louth| including Louth| including South Tipperary| excluding South Tipperary")) %>%
+  filter(Year %in% c("2012", "2025")) %>%
+  group_by(Region, Year) %>%
+  summarise(Index = mean(VALUE, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = Year, values_from = Index) %>%
+  drop_na() %>%
+  # Sorts the y-axis by the absolute highest peak in 2025
+  mutate(Region = reorder(Region, `2025`)) 
+
+# 2. Build the Dumbbell Plot
+ggplot(db_df, aes(y = Region)) +
+  geom_segment(aes(x = `2012`, xend = `2025`, y = Region, yend = Region), color = "gray70", linewidth = 1) +
+  geom_point(aes(x = `2012`, color = "2012 Trough"), size = 3) +
+  geom_point(aes(x = `2025`, color = "2025 Peak"), size = 3) +
+  scale_color_manual(values = c("2012 Trough" = "#3498db", "2025 Peak" = "#c0392b")) +
+  theme_minimal() +
+  theme(legend.position = "top", panel.grid.minor = element_blank()) +
+  labs(title = "The Recovery: 2012 Trough vs. 2025 Peak",
+       subtitle = "Absolute Index Level showing how high prices have climbed",
+       x = "Price Index (Base 100)", y = NULL, color = "")
+```
+
+------------------------------------------------------------------------
+
+### 4. The Apartment/House Divide
+
+Did buyers' preferences for property types shift after the crash?
+
+Apartments and houses did not recover equally. This ribbon chart encodes the gap between the two as a filled area, red shading shows when apartments trade below houses. The widening post-crash gap reveals a structural shift in buyer preference toward houses.
+
+```{r}
+#| label: fig-explanatory-4
+#| warning: false
+
+ggplot(ribbon_df, aes(x = Date)) +
+  geom_ribbon(aes(ymin = pmin(Houses, Apartments),
+                  ymax = pmax(Houses, Apartments)),
+              fill = "#c0392b", alpha = 0.2) +
+  geom_line(aes(y = Houses,     color = "Houses"),     linewidth = 1) +
+  geom_line(aes(y = Apartments, color = "Apartments"), linewidth = 1) +
+  scale_color_manual(values = c("Houses"     = "#2c3e50",
+                                "Apartments" = "#c0392b")) +
+  theme_minimal() +
+  theme(panel.grid.minor = element_blank(),
+        legend.position  = "top",
+        plot.title       = element_text(face = "bold", size = 14)) +
+  labs(title    = "Houses vs. Apartments: A Widening Gap",
+       subtitle = "National price index — shaded area shows the divergence (HPM06C01)",
+       x        = NULL,
+       y        = "Price Index (Base 100)",
+       color    = "")
+```
+
+The data reveals that the Irish housing market did not just recover from the 2008 crash, it fundamentally restructured itself. While the entire country eventually regained its lost value, the recovery was highly unequal. The most intense price inflation was hyper-concentrated in Dublin and its surrounding commuter belt, driven by severe supply shortages that created an impenetrable affordability ceiling for average buyers. As Dublin house prices reached unsustainable absolute levels, buyers were forced outward, shifting the intense demand, and the resulting price inflation, into the regional counties. Ultimately, the affordability crisis hasn't been solved; it has just been exported.
